@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1120" height="700" viewBox="0 0 1120 700" role="img" aria-labelledby="title desc">
+  <title id="title">Chooser TUI demo</title>
+  <desc id="desc">Terminal UI preview showing AirTalk AppleTalk services discovered by Chooser.</desc>
+  <rect width="1120" height="700" fill="#101214"/>
+  <rect x="24" y="24" width="1072" height="652" rx="8" fill="#16191d" stroke="#5e646e" stroke-width="2"/>
+  <g font-family="JetBrains Mono, Menlo, Consolas, monospace" font-size="24" fill="#d7dce2">
+    <rect x="46" y="48" width="1028" height="68" fill="#111418" stroke="#b8bec8" stroke-width="2"/>
+    <rect x="72" y="70" width="110" height="30" fill="#d7dce2"/>
+    <text x="86" y="93" fill="#111418" font-weight="700">Chooser</text>
+    <text x="208" y="93">NBP =:=@*  refresh 6  filter: none  local: framework-b:AirTalk</text>
+
+    <rect x="46" y="136" width="350" height="392" fill="#111418" stroke="#b8bec8" stroke-width="2"/>
+    <rect x="428" y="136" width="646" height="392" fill="#111418" stroke="#b8bec8" stroke-width="2"/>
+    <rect x="46" y="550" width="1028" height="102" fill="#111418" stroke="#b8bec8" stroke-width="2"/>
+
+    <text x="72" y="128" fill="#d7dce2">AppleTalk</text>
+    <text x="454" y="128" fill="#d7dce2">Services</text>
+    <text x="72" y="542" fill="#d7dce2">Status</text>
+
+    <rect x="70" y="170" width="302" height="34" fill="#d7dce2"/>
+    <text x="88" y="195" fill="#111418">AirTalk</text>
+    <text x="88" y="242">All</text>
+    <text x="88" y="288">LaserWriter</text>
+    <text x="88" y="334">AFPServer</text>
+
+    <text x="454" y="180" fill="#f3d36b" font-weight="700">Name             Type          Zone       Socket</text>
+    <rect x="452" y="204" width="594" height="38" fill="#d7dce2"/>
+    <text x="462" y="231" fill="#111418">thinkpad-a       AirTalk       *          1.42:221</text>
+    <text x="462" y="282">pi-airtalk       AirTalk       *          1.88:197</text>
+    <text x="462" y="333">StudioPrinter    LaserWriter   *          1.12:129</text>
+    <text x="462" y="384">DemoShare        AFPServer     *          1.77:254</text>
+
+    <text x="72" y="592">2 services visible | AEP echo from thinkpad-a in 4 ms</text>
+    <text x="72" y="626">thinkpad-a:AirTalk@*  socket 1.42:221</text>
+    <text x="72" y="660">arrows select  / filter  Esc clear  r refresh  p ping  Enter message  q quit</text>
+  </g>
+</svg>

@@ -7,6 +7,8 @@ services in a terminal UI inspired by the classic Mac OS Chooser.
 It is intentionally a wrapper around TailTalk. It does not implement AppleTalk
 protocols or packet parsing itself.
 
+![Chooser TUI preview](docs/chooser-demo.svg)
+
 ## Demo Day Quick Start on NixOS
 
 Use this path when two NixOS laptops are connected to the same isolated Ethernet
