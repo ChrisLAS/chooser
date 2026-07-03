@@ -1,0 +1,15 @@
+[package]
+name = "chooser"
+version = "0.1.0"
+edition = "2021"
+license = "GPL-3.0-only"
+
+[dependencies]
+anyhow = "1.0.102"
+clap = { version = "4.6.0", features = ["derive"] }
+crossterm = { version = "0.29.0", features = ["event-stream"] }
+futures = "0.3.32"
+ratatui = "0.29.0"
+tailtalk = { git = "https://github.com/FeralFirmware/TailTalk.git", rev = "e786ff7", features = ["ethertalk"] }
+tailtalk-packets = { git = "https://github.com/FeralFirmware/TailTalk.git", rev = "e786ff7" }
+tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "signal", "time"] }
