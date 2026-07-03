@@ -21,9 +21,16 @@ use ratatui::{
     },
     DefaultTerminal, Frame,
 };
-use tailtalk::TalkStack;
-use tailtalk_packets::nbp::{EntityName, NbpTuple};
-use tokio::time::{self, MissedTickBehavior};
+use tailtalk::{adsp::AdspAddress, nbp::RegisteredName, TalkStack};
+use tailtalk_packets::{
+    aarp::AppleTalkAddress,
+    nbp::{EntityName, NbpTuple},
+};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    sync::mpsc,
+    time::{self, MissedTickBehavior},
+};
 
 #[derive(Parser, Debug)]
 #[command(about = "Browse AppleTalk NBP services with TailTalk")]
@@ -51,6 +58,22 @@ struct Args {
     /// Plain mode: print each refresh below the previous one instead of clearing
     #[arg(long)]
     no_clear: bool,
+
+    /// Name to advertise as an AirTalk peer
+    #[arg(long)]
+    name: Option<String>,
+
+    /// Disable NBP peer advertisement and ADSP message listener
+    #[arg(long)]
+    no_advertise: bool,
+
+    /// NBP service type used for Linux-to-Linux AirTalk peers
+    #[arg(long, default_value = "AirTalk")]
+    peer_type: String,
+
+    /// Message sent to the selected AirTalk peer with Enter
+    #[arg(long)]
+    message: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
@@ -58,19 +81,32 @@ struct Service {
     name: String,
     kind: String,
     zone: String,
+    network_number: u16,
+    node_id: u8,
+    socket_number: u8,
     socket: String,
 }
 
 struct App {
     entity: EntityName,
+    local_name: String,
+    peer_type: String,
+    message: String,
     rows: Vec<Service>,
     filter: String,
     status: String,
     refresh_count: u64,
     editing_filter: bool,
-    refresh_requested: bool,
     selected_type: usize,
     selected_row: usize,
+}
+
+enum InputAction {
+    None,
+    Quit,
+    Refresh,
+    Ping,
+    Message,
 }
 
 #[tokio::main]
@@ -82,11 +118,12 @@ async fn main() -> anyhow::Result<()> {
         .try_into()
         .map_err(|err| anyhow!("invalid NBP entity '{}': {}", args.entity, err))?;
     let stack = build_stack(&args).await?;
+    let peer = setup_peer(&stack, &args).await?;
 
     if args.plain {
-        run_plain(stack, entity, &args).await
+        run_plain(stack, entity, &args, peer.incoming).await
     } else {
-        run_tui(stack, entity, args.refresh.max(1)).await
+        run_tui(stack, entity, peer, &args).await
     }
 }
 
@@ -108,24 +145,132 @@ async fn build_stack(args: &Args) -> anyhow::Result<TalkStack> {
         .context("failed to build TailTalk AppleTalk stack")
 }
 
-async fn run_tui(stack: TalkStack, entity: EntityName, refresh_secs: u64) -> anyhow::Result<()> {
+struct PeerRuntime {
+    local_name: String,
+    peer_type: String,
+    message: String,
+    incoming: Option<mpsc::UnboundedReceiver<String>>,
+}
+
+async fn setup_peer(stack: &TalkStack, args: &Args) -> anyhow::Result<PeerRuntime> {
+    let local_name = sanitize_nbp_part(&args.name.clone().unwrap_or_else(default_peer_name));
+    let message = args
+        .message
+        .clone()
+        .unwrap_or_else(|| format!("Hello from {local_name}"));
+
+    if args.no_advertise {
+        return Ok(PeerRuntime {
+            local_name,
+            peer_type: args.peer_type.clone(),
+            message,
+            incoming: None,
+        });
+    }
+
+    let (socket, mut listener) = stack
+        .listen_adsp(None)
+        .await
+        .context("failed to start AirTalk ADSP listener")?;
+    let entity: EntityName = format!("{}:{}@*", local_name, args.peer_type)
+        .as_str()
+        .try_into()
+        .map_err(|err| anyhow!("invalid advertised peer name: {err}"))?;
+    stack
+        .nbp
+        .register(RegisteredName {
+            name: entity,
+            sock_num: socket,
+        })
+        .await
+        .context("failed to register AirTalk NBP name")?;
+
+    let (tx, rx) = mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        loop {
+            let Ok(mut stream) = listener.accept().await else {
+                break;
+            };
+            let tx = tx.clone();
+            tokio::spawn(async move {
+                let remote = stream.remote_addr();
+                let mut data = Vec::new();
+                let status = match stream.read_to_end(&mut data).await {
+                    Ok(_) => format!(
+                        "message from {}.{}:{}: {}",
+                        remote.network_number,
+                        remote.node_number,
+                        remote.socket_number,
+                        String::from_utf8_lossy(&data)
+                    ),
+                    Err(err) => format!("failed reading ADSP message: {err}"),
+                };
+                let _ = tx.send(status);
+            });
+        }
+    });
+
+    Ok(PeerRuntime {
+        local_name,
+        peer_type: args.peer_type.clone(),
+        message,
+        incoming: Some(rx),
+    })
+}
+
+fn default_peer_name() -> String {
+    std::env::var("HOSTNAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+        .or_else(|| {
+            std::fs::read_to_string("/etc/hostname")
+                .ok()
+                .map(|name| name.trim().to_string())
+        })
+        .filter(|name| !name.is_empty())
+        .unwrap_or_else(|| "chooser-linux".into())
+}
+
+fn sanitize_nbp_part(value: &str) -> String {
+    let cleaned: String = value
+        .chars()
+        .map(|c| match c {
+            ':' | '@' | '*' | '=' | '≈' => '-',
+            c if c.is_control() => '-',
+            c => c,
+        })
+        .collect();
+    let cleaned = cleaned.trim_matches('-').trim();
+    if cleaned.is_empty() {
+        "chooser-linux".into()
+    } else {
+        cleaned.chars().take(31).collect()
+    }
+}
+
+async fn run_tui(
+    stack: TalkStack,
+    entity: EntityName,
+    mut peer: PeerRuntime,
+    args: &Args,
+) -> anyhow::Result<()> {
     let mut terminal = TerminalGuard::enter()?;
     let mut events = EventStream::new();
-    let mut interval = time::interval(Duration::from_secs(refresh_secs));
+    let mut interval = time::interval(Duration::from_secs(args.refresh.max(1)));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    let mut app = App::new(entity);
+    let mut app = App::new(entity, &peer);
 
     loop {
         terminal.draw(|frame| draw(frame, &mut app))?;
         tokio::select! {
             maybe_event = events.next() => {
                 if let Some(Ok(Event::Key(key))) = maybe_event {
-                    if handle_key(&mut app, key) {
-                        break;
-                    }
-                    if app.refresh_requested {
-                        app.refresh_requested = false;
-                        refresh(&stack, &mut app).await;
+                    match handle_key(&mut app, key) {
+                        InputAction::Quit => break,
+                        InputAction::Refresh => refresh(&stack, &mut app).await,
+                        InputAction::Ping => ping_selected(&stack, &mut app).await,
+                        InputAction::Message => message_selected(&stack, &mut app).await,
+                        InputAction::None => {}
                     }
                 }
             }
@@ -134,10 +279,23 @@ async fn run_tui(stack: TalkStack, entity: EntityName, refresh_secs: u64) -> any
                 break;
             }
             _ = interval.tick() => refresh(&stack, &mut app).await,
+            message = recv_peer_message(&mut peer.incoming) => {
+                if let Some(message) = message {
+                    app.status = message;
+                }
+            }
         }
     }
 
     Ok(())
+}
+
+async fn recv_peer_message(rx: &mut Option<mpsc::UnboundedReceiver<String>>) -> Option<String> {
+    if let Some(rx) = rx {
+        rx.recv().await
+    } else {
+        std::future::pending().await
+    }
 }
 
 async fn refresh(stack: &TalkStack, app: &mut App) {
@@ -152,9 +310,56 @@ async fn refresh(stack: &TalkStack, app: &mut App) {
     }
 }
 
-fn handle_key(app: &mut App, key: KeyEvent) -> bool {
+async fn ping_selected(stack: &TalkStack, app: &mut App) {
+    let Some(row) = app.selected_service() else {
+        app.status = "no service selected".into();
+        return;
+    };
+    let addr = AppleTalkAddress {
+        network_number: row.network_number,
+        node_number: row.node_id,
+    };
+    match stack.echo.send(addr, b"chooser").await {
+        Ok(rtt) => app.status = format!("AEP echo from {} in {} ms", row.name, rtt.as_millis()),
+        Err(err) => app.status = format!("AEP echo to {} failed: {err}", row.name),
+    }
+}
+
+async fn message_selected(stack: &TalkStack, app: &mut App) {
+    let Some(row) = app.selected_service() else {
+        app.status = "no AirTalk peer selected".into();
+        return;
+    };
+    if row.kind != app.peer_type {
+        app.status = format!("select a {} peer before sending a message", app.peer_type);
+        return;
+    }
+
+    let addr = AdspAddress {
+        network_number: row.network_number,
+        node_number: row.node_id,
+        socket_number: row.socket_number,
+    };
+    match stack.connect_adsp(addr).await {
+        Ok(mut stream) => {
+            let result = async {
+                stream.write_all(app.message.as_bytes()).await?;
+                stream.write_eom().await?;
+                stream.close().await
+            }
+            .await;
+            match result {
+                Ok(()) => app.status = format!("sent ADSP message to {}", row.name),
+                Err(err) => app.status = format!("ADSP send to {} failed: {err}", row.name),
+            }
+        }
+        Err(err) => app.status = format!("ADSP connect to {} failed: {err}", row.name),
+    }
+}
+
+fn handle_key(app: &mut App, key: KeyEvent) -> InputAction {
     if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
-        return true;
+        return InputAction::Quit;
     }
     if app.editing_filter {
         match key.code {
@@ -169,45 +374,44 @@ fn handle_key(app: &mut App, key: KeyEvent) -> bool {
             }
             _ => {}
         }
-        return false;
+        return InputAction::None;
     }
 
     match key.code {
-        KeyCode::Char('q') => true,
+        KeyCode::Char('q') => InputAction::Quit,
         KeyCode::Char('/') => {
             app.editing_filter = true;
-            false
+            InputAction::None
         }
-        KeyCode::Char('r') => {
-            app.refresh_requested = true;
-            false
-        }
+        KeyCode::Char('r') => InputAction::Refresh,
+        KeyCode::Char('p') => InputAction::Ping,
+        KeyCode::Enter => InputAction::Message,
         KeyCode::Esc => {
             app.filter.clear();
             app.clamp_selection();
-            false
+            InputAction::None
         }
         KeyCode::Up => {
             app.selected_row = app.selected_row.saturating_sub(1);
-            false
+            InputAction::None
         }
         KeyCode::Down => {
             app.selected_row += 1;
             app.clamp_selection();
-            false
+            InputAction::None
         }
         KeyCode::Left => {
             app.selected_type = app.selected_type.saturating_sub(1);
             app.selected_row = 0;
-            false
+            InputAction::None
         }
         KeyCode::Right => {
             app.selected_type += 1;
             app.selected_row = 0;
             app.clamp_selection();
-            false
+            InputAction::None
         }
-        _ => false,
+        _ => InputAction::None,
     }
 }
 
@@ -248,6 +452,7 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect) {
             "  NBP {}  refresh {}  filter: {}",
             app.entity, app.refresh_count, filter
         )),
+        Span::raw(format!("  local: {}:{}", app.local_name, app.peer_type)),
     ]);
     frame.render_widget(
         Paragraph::new(title).block(Block::default().borders(Borders::ALL).title("AirTalk")),
@@ -316,7 +521,7 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let mode = if app.editing_filter {
         "typing filter; Enter/Esc finishes"
     } else {
-        "arrows select  / filter  Esc clear  r refresh  q quit"
+        "arrows select  / filter  Esc clear  r refresh  p ping  Enter message  q quit"
     };
     frame.render_widget(
         Paragraph::new(vec![
@@ -329,7 +534,12 @@ fn draw_details(frame: &mut Frame<'_>, app: &App, area: Rect) {
     );
 }
 
-async fn run_plain(stack: TalkStack, entity: EntityName, args: &Args) -> anyhow::Result<()> {
+async fn run_plain(
+    stack: TalkStack,
+    entity: EntityName,
+    args: &Args,
+    mut incoming: Option<mpsc::UnboundedReceiver<String>>,
+) -> anyhow::Result<()> {
     let clear_screen = !args.no_clear && io::stdout().is_terminal();
     let mut interval = time::interval(Duration::from_secs(args.refresh.max(1)));
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -346,6 +556,11 @@ async fn run_plain(stack: TalkStack, entity: EntityName, args: &Args) -> anyhow:
                 refresh_count += 1;
                 let lookup = stack.nbp.lookup(entity.clone()).await;
                 render_plain(refresh_count, &entity, lookup.as_deref().ok(), lookup.as_ref().err(), clear_screen)?;
+            }
+            message = recv_peer_message(&mut incoming) => {
+                if let Some(message) = message {
+                    eprintln!("{message}");
+                }
             }
         }
     }
@@ -402,6 +617,9 @@ fn services(tuples: &[NbpTuple]) -> Vec<Service> {
             name: tuple.entity_name.object.clone(),
             kind: tuple.entity_name.entity_type.clone(),
             zone: tuple.entity_name.zone.clone(),
+            network_number: tuple.network_number,
+            node_id: tuple.node_id,
+            socket_number: tuple.socket_number,
             socket: format!(
                 "{}.{}:{}",
                 tuple.network_number, tuple.node_id, tuple.socket_number
@@ -414,15 +632,17 @@ fn services(tuples: &[NbpTuple]) -> Vec<Service> {
 }
 
 impl App {
-    fn new(entity: EntityName) -> Self {
+    fn new(entity: EntityName, peer: &PeerRuntime) -> Self {
         Self {
             entity,
+            local_name: peer.local_name.clone(),
+            peer_type: peer.peer_type.clone(),
+            message: peer.message.clone(),
             rows: Vec::new(),
             filter: String::new(),
             status: "waiting for first lookup".into(),
             refresh_count: 0,
             editing_filter: false,
-            refresh_requested: false,
             selected_type: 0,
             selected_row: 0,
         }

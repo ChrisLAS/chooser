@@ -12,4 +12,4 @@ futures = "0.3.32"
 ratatui = "0.29.0"
 tailtalk = { git = "https://github.com/FeralFirmware/TailTalk.git", rev = "e786ff7", features = ["ethertalk"] }
 tailtalk-packets = { git = "https://github.com/FeralFirmware/TailTalk.git", rev = "e786ff7" }
-tokio = { version = "1.51.1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tokio = { version = "1.51.1", features = ["io-util", "macros", "rt-multi-thread", "signal", "sync", "time"] }

@@ -54,6 +54,7 @@ Useful runtime checks:
 ```sh
 ./target/release/chooser --plain --interface eth0
 ./target/release/chooser --interface eth0
+./target/release/chooser --interface eth0 --name demo-a
 ```
 
 On non-demo interfaces, stack setup or lookups may fail because TailTalk needs a
@@ -67,10 +68,17 @@ service types on the left, discovered services on the right, and selected
 service details at the bottom. Keep the UI readable on a projector and reliable
 over pixel-perfect nostalgia.
 
+By default the app advertises itself as `NAME:AirTalk@*`, registers the actual
+ADSP listener socket through TailTalk NBP, and accepts short ADSP text messages
+from other Chooser instances. Use `--no-advertise` only when passive browsing is
+required.
+
 Keyboard controls:
 
 - `q` or Ctrl-C: quit
 - `r`: refresh immediately
+- `p`: AEP ping selected service
+- Enter: send ADSP message to selected AirTalk peer
 - Arrow keys: move selection
 - `/`: edit filter
 - Enter or Esc: finish editing filter
